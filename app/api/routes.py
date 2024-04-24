@@ -23,3 +23,5 @@ def get_accounts():
         'customer_id': acct.customerid
     } for acct in accounts]
     return jsonify(accounts_list)
+
+
