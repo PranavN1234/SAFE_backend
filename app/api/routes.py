@@ -2,6 +2,7 @@ import os
 from . import api_blueprint
 from flask import request, jsonify, current_app
 from flask_cors import CORS, cross_origin
+from app.utils.helpers import generate_unique_account_number
 from app.models import Account, Auth, Customer
 from app import db
 
@@ -67,7 +68,15 @@ def login():
 
     user = Auth.query.filter_by(username=username).first()
     if user and user.check_password(password):
-        # Return the username in the response
-        return jsonify({'message': 'Login successful', 'username': username}), 200
+        return jsonify({'message': 'Login successful', 'username': username, 'customer_id': user.customer_id}), 200
     else:
         return jsonify({'error': 'Invalid username or password'}), 401
+
+@api_blueprint.route('/create_account', methods=['POST'])
+def create_account():
+    # Assume other account details are handled here
+    account_number = generate_unique_account_number()
+    # new_account = Account(acct_no=account_number)
+    # db.session.add(new_account)
+    db.session.commit()
+    return jsonify({'message': 'Account created', 'account_number': account_number}), 201
