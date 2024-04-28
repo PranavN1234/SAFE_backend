@@ -1,4 +1,20 @@
 from app import db
+from werkzeug.security import generate_password_hash, check_password_hash
+import bcrypt
+class Auth(db.Model):
+    __tablename__ = 'pba_auth'
+    customer_id = db.Column(db.Integer, db.ForeignKey('pba_customer.customerid'), primary_key=True)
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.LargeBinary, nullable=False)
+
+    def set_password(self, password):
+        password = password.encode('utf-8')  # Ensure password is bytes
+        self.password_hash = bcrypt.hashpw(password, bcrypt.gensalt())
+
+    def check_password(self, password):
+        password = password.encode('utf-8')  # Ensure password is bytes
+        # Ensure password_hash is treated as bytes
+        return bcrypt.checkpw(password, self.password_hash)
 
 class Customer(db.Model):
     __tablename__ = 'pba_customer'
@@ -10,6 +26,7 @@ class Customer(db.Model):
     cstate = db.Column(db.String(20), nullable=False, comment='Customer State')
     czip = db.Column(db.Integer, nullable=False, comment='Customer Zip')
 
+    auth = db.relationship('Auth', backref='customer', uselist=False)
     def __repr__(self):
         return f'<Customer {self.customerid} {self.cfname} {self.clname}>'
 
