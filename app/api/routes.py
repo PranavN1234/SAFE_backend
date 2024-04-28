@@ -67,6 +67,7 @@ def login():
 
     user = Auth.query.filter_by(username=username).first()
     if user and user.check_password(password):
-        return jsonify({'message': 'Login successful'}), 200
+        # Return the username in the response
+        return jsonify({'message': 'Login successful', 'username': username}), 200
     else:
         return jsonify({'error': 'Invalid username or password'}), 401

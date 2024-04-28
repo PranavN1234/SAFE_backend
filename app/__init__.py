@@ -8,7 +8,7 @@ def create_app():
     app = Flask(__name__)
     app.secret_key = 'casestudy'
     app.config['SESSION_TYPE'] = 'filesystem'
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:Pranavpokemon1@localhost/pba_project2'
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'mysql+pymysql://root:password@localhost/pba_project2'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     CORS(app, supports_credentials=True, origins="*")
 
