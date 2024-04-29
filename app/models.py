@@ -7,6 +7,7 @@ class Auth(db.Model):
     customer_id = db.Column(db.Integer, db.ForeignKey('pba_customer.customerid'), primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.LargeBinary, nullable=False)
+    is_admin = db.Column(db.Integer, default=0, nullable=False)
 
     def set_password(self, password):
         password = password.encode('utf-8')  # Ensure password is bytes

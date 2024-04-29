@@ -69,7 +69,12 @@ def login():
 
     user = Auth.query.filter_by(username=username).first()
     if user and user.check_password(password):
-        return jsonify({'message': 'Login successful', 'username': username, 'customer_id': user.customer_id}), 200
+        customer = Customer.query.get(user.customer_id)
+        if customer:
+            fullname = f"{customer.cfname} {customer.clname}"
+            return jsonify({'message': 'Login successful', 'username': username, 'customer_id': user.customer_id, 'fullname': fullname, 'is_admin': user.is_admin}), 200
+        else:
+            return jsonify({'error': 'Customer not found'}), 404
     else:
         return jsonify({'error': 'Invalid username or password'}), 401
 
@@ -244,3 +249,51 @@ def get_accounts_customer():
 
 
     return jsonify(accounts_list)
+
+@api_blueprint.route('/pending_accounts', methods=['GET'])
+def get_pending_accounts():
+    # Query to join Account, Customer, and optionally Loan based on account status 'Pending'
+    results = (db.session.query(Account, Customer, Loan)
+                .join(Customer, Account.customerid == Customer.customerid)
+                .outerjoin(Loan, Account.acct_no == Loan.acct_no)
+                .filter(Account.status == 'Pending')
+                .all())
+
+    accounts_list = []
+    for account, customer, loan in results:
+        # Basic account and customer info
+        account_info = {
+            'customer_name': f"{customer.cfname} {customer.clname}",
+            'customer_id': customer.customerid,
+            'account_number': account.acct_no,
+            'account_type': account.acct_type,
+            'loan_type': None,
+            'loan_amount': None
+        }
+
+        # Include loan info if present
+        if loan:
+            account_info['loan_type'] = loan.loan_type if loan.loan_type else "N/A"
+            account_info['loan_amount'] = loan.loan_amount if loan.loan_amount else "N/A"
+
+        accounts_list.append(account_info)
+
+    return jsonify(accounts_list)
+
+
+@api_blueprint.route('/approve_accounts', methods=['POST'])
+def approve_accounts():
+    data = request.get_json()
+    account_numbers = data.get('account_numbers')
+
+    if not account_numbers:
+        return jsonify({'error': 'No account numbers provided'}), 400
+
+    accounts_to_approve = Account.query.filter(Account.acct_no.in_(account_numbers), Account.status == 'pending').all()
+
+    for account in accounts_to_approve:
+        account.status = 'approved'
+
+    db.session.commit()
+
+    return jsonify({'message': f'{len(accounts_to_approve)} accounts approved successfully'}), 200
