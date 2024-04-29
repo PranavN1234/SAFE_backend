@@ -1,6 +1,7 @@
 from app import db
-from werkzeug.security import generate_password_hash, check_password_hash
+
 import bcrypt
+from decimal import Decimal
 class Auth(db.Model):
     __tablename__ = 'pba_auth'
     customer_id = db.Column(db.Integer, db.ForeignKey('pba_customer.customerid'), primary_key=True)
@@ -18,7 +19,7 @@ class Auth(db.Model):
 
 class Customer(db.Model):
     __tablename__ = 'pba_customer'
-    customerid = db.Column(db.Integer, primary_key=True, comment='Customer ID')
+    customerid = db.Column(db.Integer, primary_key=True, autoincrement=True, comment='Customer ID')
     cfname = db.Column(db.String(20), nullable=False, comment='Customer First Name')
     clname = db.Column(db.String(20), nullable=False, comment='Customer Last Name')
     cstreet = db.Column(db.String(20), nullable=False, comment='Customer Street')
@@ -34,13 +35,14 @@ class Account(db.Model):
     __tablename__ = 'pba_account'
     acct_no = db.Column(db.Integer, primary_key=True, comment='Account number')
     acct_name = db.Column(db.String(50), nullable=False, comment='Account Name')
-    acct_street = db.Column(db.String(20), nullable=False, comment='Account Street')
+    acct_street = db.Column(db.String(40), nullable=False, comment='Account Street')
     acct_city = db.Column(db.String(20), nullable=False, comment='Account City')
     acct_state = db.Column(db.String(20), nullable=False, comment='Account State')
     acct_zip = db.Column(db.Integer, nullable=False, comment='Account Zip')
     acct_type = db.Column(db.String(11), nullable=False, comment='Account Type')
     date_opened = db.Column(db.DateTime, nullable=False, comment='Date Opened')
     customerid = db.Column(db.Integer, db.ForeignKey('pba_customer.customerid'), nullable=False, comment='Customer ID foreign key')
+    status = db.Column(db.String(25), nullable=False, default='pending', comment='Account Status')
 
     checking_account = db.relationship('CheckingAccount', back_populates='account', uselist=False)
     savings_account = db.relationship('SavingsAccount', back_populates='account', uselist=False)
@@ -52,6 +54,7 @@ class CheckingAccount(db.Model):
     __tablename__ = 'pba_checking'
     acct_no = db.Column(db.Integer, db.ForeignKey('pba_account.acct_no'), primary_key=True, comment='Account number')
     service_charge = db.Column(db.Float, nullable=False, comment='Service Charge')
+    balance = db.Column(db.Numeric(15, 2), nullable=False, default=Decimal('500.00'), comment='Account Balance')
 
     # Relationship to link back to the Account model
     account = db.relationship('Account', back_populates='checking_account')
@@ -109,6 +112,7 @@ class SavingsAccount(db.Model):
     __tablename__ = 'pba_savings'
     acct_no = db.Column(db.Integer, db.ForeignKey('pba_account.acct_no'), primary_key=True, comment='Account number')
     interest_rate = db.Column(db.Float, nullable=False, comment='Interest Rate')
+    balance = db.Column(db.Numeric(15, 2), nullable=False, default=Decimal('500.00'), comment='Account Balance')
 
     # Relationship to link back to the Account model
     account = db.relationship('Account', back_populates='savings_account')
@@ -135,7 +139,7 @@ class StudentLoan(db.Model):
 
 class University(db.Model):
     __tablename__ = 'pba_university'
-    universityid = db.Column(db.Integer, primary_key=True, comment='UniversityId')
+    universityid = db.Column(db.Integer, primary_key=True, autoincrement=True, comment='University ID')
     universityname = db.Column(db.String(50), nullable=False, comment='University Name')
 
     # Relationship with StudentLoan, assuming you have a back reference set up in StudentLoan
