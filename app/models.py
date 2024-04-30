@@ -1,7 +1,9 @@
 from app import db
-
+import random
+import string
 import bcrypt
 from decimal import Decimal
+from datetime import datetime
 class Auth(db.Model):
     __tablename__ = 'pba_auth'
     customer_id = db.Column(db.Integer, db.ForeignKey('pba_customer.customerid'), primary_key=True)
@@ -149,4 +151,13 @@ class University(db.Model):
     def __repr__(self):
         return f'<University {self.universityname}>'
 
+class Transaction(db.Model):
+    __tablename__ = 'pba_transactions'
+    t_id = db.Column(db.String(7), primary_key=True, nullable=False)  # Removed default generation
+    from_account = db.Column(db.Integer, db.ForeignKey('pba_account.acct_no'), nullable=False)
+    to_account = db.Column(db.Integer, db.ForeignKey('pba_account.acct_no'), nullable=False)
+    amount = db.Column(db.Numeric(15, 2), nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
+    def __repr__(self):
+        return f'<Transaction {self.t_id} from {self.from_account} to {self.to_account} amount {self.amount}>'

@@ -2,10 +2,12 @@ import os
 from . import api_blueprint
 from flask import request, jsonify, current_app
 from flask_cors import CORS, cross_origin
-from app.utils.helpers import generate_unique_account_number
-from app.models import Account, Auth, Customer, CheckingAccount, SavingsAccount, Loan, University, StudentLoan, PersonalLoan, HomeLoan
+from app.utils.helpers import generate_unique_account_number, generate_unique_transaction_id, calculate_balances
+from app.models import Account, Auth, Customer, CheckingAccount, SavingsAccount, Loan, University, StudentLoan, PersonalLoan, HomeLoan, Transaction
 from app import db
-from datetime import datetime
+from datetime import datetime, timedelta
+from decimal import Decimal
+
 
 @api_blueprint.route('/', methods=['GET'])
 def hello_world():
@@ -82,6 +84,7 @@ def login():
 def create_account():
     data = request.get_json()
 
+    print(data)
     required_fields = ['acctType', 'acctStreet', 'acctCity', 'acctState', 'acctZip', 'customerId']
 
     if not all(field in data for field in required_fields):
@@ -297,3 +300,242 @@ def approve_accounts():
     db.session.commit()
 
     return jsonify({'message': f'{len(accounts_to_approve)} accounts approved successfully'}), 200
+
+@api_blueprint.route('/balances/<int:customer_id>', methods=['GET'])
+def get_balances(customer_id):
+    # Retrieve all accounts linked to the customer
+    accounts = Account.query.filter_by(customerid=customer_id).all()
+
+    # Initialize balances
+    balances = {
+        'checking_balance': 0,
+        'savings_balance': 0
+    }
+
+    # Iterate over accounts to find checking and savings accounts
+    for account in accounts:
+        if account.acct_type == 'Checking' and hasattr(account, 'checking_account'):
+            balances['checking_balance'] += account.checking_account.balance
+        elif account.acct_type == 'Savings' and hasattr(account, 'savings_account'):
+            balances['savings_balance'] += account.savings_account.balance
+
+    # Check if balances were updated from their initial state
+    if balances['checking_balance'] == 0 and balances['savings_balance'] == 0:
+        return jsonify({'error': 'No checking or savings accounts found for this customer'}), 404
+
+    return jsonify(balances), 200
+
+@api_blueprint.route('/transfer_money', methods=['POST'])
+def transfer_money():
+    data = request.get_json()
+    from_customer_id = data.get('from_customer_id')
+    to_acct_no = data.get('to_acct_no')
+    from_account_type = data.get('type')  # 'checking' or 'savings'
+    amount = Decimal(data.get('amount'))
+
+    if not all([from_customer_id, to_acct_no, amount, from_account_type]):
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    # Fetch the sender's account based on customer ID and account type
+    from_account = get_account(from_customer_id, from_account_type)
+    # Fetch the recipient's account based on account number and determine the type dynamically
+    to_account = Account.query.filter_by(acct_no=to_acct_no).first()
+    print(from_account, to_account)
+    if not from_account or not to_account:
+        return jsonify({'error': 'One or more accounts not found'}), 404
+
+    if from_account.balance < amount:
+        return jsonify({'error': 'Insufficient funds'}), 403
+
+    # Adjust balances depending on the account type of the recipient
+    print(to_account)
+    if to_account.acct_type == 'Checking':
+        to_checking_account = CheckingAccount.query.filter_by(acct_no=to_acct_no).first()
+        if to_checking_account:
+            to_checking_account.balance += amount
+    elif to_account.acct_type == 'Savings':
+        to_savings_account = SavingsAccount.query.filter_by(acct_no=to_acct_no).first()
+        if to_savings_account:
+            to_savings_account.balance += amount
+    else:
+        return jsonify({'error': 'Recipient account type is invalid'}), 400
+
+    # Deduct the amount from the sender's account
+    from_account.balance -= amount
+
+    transaction = Transaction(
+        t_id=generate_unique_transaction_id(),
+        from_account=from_account.acct_no,
+        to_account=to_account.acct_no,
+        amount=amount
+    )
+    db.session.add(transaction)
+
+    db.session.commit()
+    return jsonify({'message': 'Transfer successful'}), 200
+
+def get_account(customer_id, account_type):
+    """Helper function to fetch account based on type and customer ID."""
+    print(account_type, customer_id)
+    if account_type == 'Checking' or account_type == 'checking':
+        return CheckingAccount.query.join(Account).filter(Account.customerid == customer_id).first()
+    elif account_type == 'Savings' or account_type == 'savings':
+        return SavingsAccount.query.join(Account).filter(Account.customerid == customer_id).first()
+    return None
+
+@api_blueprint.route('/update_profile', methods=['POST'])
+def update_profile():
+    data = request.get_json()
+    customer_id = data.get('customer_id')
+    current_password = data.get('current_password')
+    new_username = data.get('new_username', None)
+    new_password = data.get('new_password', None)
+
+    if not all([customer_id, current_password]):
+        return jsonify({'error': 'Missing required information'}), 400
+
+    # Fetch the user's authentication record
+    auth_record = Auth.query.filter_by(customer_id=customer_id).first()
+    if not auth_record:
+        return jsonify({'error': 'User not found'}), 404
+
+    # Verify the current password
+    if not auth_record.check_password(current_password):
+        return jsonify({'error': 'Incorrect password'}), 401
+
+    # Update username if provided
+    if new_username:
+        # Check if the new username is already taken
+        if Auth.query.filter(Auth.username == new_username, Auth.customer_id != customer_id).first():
+            return jsonify({'error': 'Username already taken'}), 409
+        auth_record.username = new_username
+
+    # Update password if provided
+    if new_password:
+        auth_record.set_password(new_password)
+
+    db.session.commit()
+    return jsonify({'message': 'Profile updated successfully'}), 200
+
+
+@api_blueprint.route('/account_balance_over_time/<int:customer_id>', methods=['GET'])
+def get_account_balance_over_time(customer_id):
+    # Fetch the customer
+    customer = Customer.query.get(customer_id)
+    if not customer:
+        return jsonify({'error': 'Customer not found'}), 404
+
+    # Prepare the response dictionary
+    response = {}
+
+    # Check for a Checking account
+    checking_account = Account.query.filter_by(customerid=customer_id, acct_type='Checking').first()
+    if checking_account:
+        checking_balances = calculate_balances(checking_account.acct_no)
+        response['checking'] = checking_balances
+
+    # Check for a Savings account
+    savings_account = Account.query.filter_by(customerid=customer_id, acct_type='Savings').first()
+    if savings_account:
+        savings_balances = calculate_balances(savings_account.acct_no)
+        response['savings'] = savings_balances
+
+    return jsonify(response)
+
+@api_blueprint.route('/loan_status_by_customer/<int:customer_id>', methods=['GET'])
+def get_loan_status_by_customer(customer_id):
+    # Retrieve all loans linked to any accounts owned by the customer
+    loans = Loan.query.join(Account).filter(Account.customerid == customer_id).all()
+
+    loans_data = []
+
+    for loan in loans:
+        remaining_loan = loan.loan_amount - loan.loan_payment
+        loans_data.append({
+            'account_number': loan.acct_no,
+            'loan_amount': loan.loan_amount,
+            'loan_paid': loan.loan_payment,
+            'remaining_loan': remaining_loan,
+        })
+
+    return jsonify(loans_data)
+
+@api_blueprint.route('/transactions/<int:customer_id>', methods=['GET'])
+def get_customer_transactions(customer_id):
+    # First, find all account numbers associated with the customer
+    accounts = Account.query.filter_by(customerid=customer_id).all()
+    account_numbers = [account.acct_no for account in accounts]
+
+    # Then, retrieve all transactions that involve any of these account numbers
+    transactions = Transaction.query.filter(
+        (Transaction.from_account.in_(account_numbers)) | (Transaction.to_account.in_(account_numbers))
+    ).all()
+
+    # Format the transactions for the response
+    transactions_data = [{
+        'transaction_id': transaction.t_id,
+        'from_account': transaction.from_account,
+        'to_account': transaction.to_account,
+        'amount': str(transaction.amount),
+        'timestamp': transaction.timestamp.strftime('%Y-%m-%d %H:%M:%S')
+    } for transaction in transactions]
+
+    return jsonify(transactions_data), 200
+
+@api_blueprint.route('/pay_loan', methods=['POST'])
+def pay_loan():
+    data = request.get_json()
+    loan_account_number = data.get('loanAccountNumber')
+    payment_account_type = data.get('paymentAccountType')
+    payment_amount = Decimal(data.get('paymentAmount'))
+    customer_id = data.get('customerId')
+
+    if not all([loan_account_number, payment_account_type, payment_amount, customer_id]):
+        return jsonify({'error': 'Missing required fields'}), 400
+
+    # Fetch the loan account
+    loan_account = Loan.query.join(Account).filter(Account.acct_no == loan_account_number).first()
+    if not loan_account:
+        return jsonify({'error': 'Loan account not found'}), 404
+
+    # Check if the loan is already fully paid
+    if loan_account.loan_amount <= loan_account.loan_payment:
+        return jsonify({'error': 'Loan already fully paid'}), 400
+
+    # Fetch the payment source account
+    if payment_account_type.lower() == 'checking':
+        payment_account = CheckingAccount.query.join(Account).filter(Account.customerid == customer_id).first()
+    elif payment_account_type.lower() == 'savings':
+        payment_account = SavingsAccount.query.join(Account).filter(Account.customerid == customer_id).first()
+    else:
+        return jsonify({'error': 'Invalid account type specified'}), 400
+
+    if not payment_account:
+        return jsonify({'error': 'Payment account not found'}), 404
+
+    # Check if there are sufficient funds in the payment account
+    if payment_account.balance < payment_amount:
+        return jsonify({'error': 'Insufficient funds'}), 403
+
+    # Process the payment
+    payment_account.balance -= payment_amount
+    loan_account.loan_payment += payment_amount
+    remaining_balance = loan_account.loan_amount - loan_account.loan_payment
+
+    # Create a transaction record
+    transaction = Transaction(
+        t_id=generate_unique_transaction_id(),
+        from_account=payment_account.acct_no,
+        to_account=loan_account.account.acct_no,
+        amount=payment_amount
+    )
+    db.session.add(transaction)
+
+    db.session.commit()
+
+    return jsonify({
+        'message': 'Payment successful',
+        'remaining_balance': remaining_balance
+    }), 200
+
+
