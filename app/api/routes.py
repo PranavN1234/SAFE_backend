@@ -7,6 +7,9 @@ from app.models import Account, Auth, Customer, CheckingAccount, SavingsAccount,
 from app import db
 from datetime import datetime, timedelta
 from decimal import Decimal
+import stripe
+import os
+from sqlalchemy.orm import aliased
 
 
 @api_blueprint.route('/', methods=['GET'])
@@ -336,52 +339,76 @@ def transfer_money():
     if not all([from_customer_id, to_acct_no, amount, from_account_type]):
         return jsonify({'error': 'Missing required fields'}), 400
 
-    # Fetch the sender's account based on customer ID and account type
-    from_account = get_account(from_customer_id, from_account_type)
-    # Fetch the recipient's account based on account number and determine the type dynamically
-    to_account = Account.query.filter_by(acct_no=to_acct_no).first()
-    print(from_account, to_account)
-    if not from_account or not to_account:
-        return jsonify({'error': 'One or more accounts not found'}), 404
+    try:
+        # Start a transaction
+        db.session.begin()
 
-    if from_account.balance < amount:
-        return jsonify({'error': 'Insufficient funds'}), 403
+        # Locking accounts for update to ensure atomicity and prevent deadlocks
+        from_account, from_account_main = get_account(from_customer_id, from_account_type, lock=True)
+        to_account, to_account_main = get_account_by_number(to_acct_no, lock=True)
 
-    # Adjust balances depending on the account type of the recipient
-    print(to_account)
-    if to_account.acct_type == 'Checking':
-        to_checking_account = CheckingAccount.query.filter_by(acct_no=to_acct_no).first()
-        if to_checking_account:
-            to_checking_account.balance += amount
-    elif to_account.acct_type == 'Savings':
-        to_savings_account = SavingsAccount.query.filter_by(acct_no=to_acct_no).first()
-        if to_savings_account:
-            to_savings_account.balance += amount
+        if not from_account or not to_account:
+            db.session.rollback()
+            return jsonify({'error': 'One or more accounts not found'}), 404
+
+        # account = Account.query.filter_by(acct_no=account_number).one_or_none()
+        from_acct = Account.query.filter_by(customerid=from_customer_id).first()
+        to_acct = Account.query.filter_by(acct_no=to_acct_no).first()
+
+        if from_acct.status == 'pending' or to_acct.status=='pending':
+            db.session.rollback()
+            return jsonify({'error': 'One or more accounts not approved'}), 404
+
+        print(from_acct.status, to_acct.status)
+        if from_account.balance < amount:
+            db.session.rollback()
+            return jsonify({'error': 'Insufficient funds'}), 403
+
+        # Adjust balances
+        from_account.balance -= amount
+        to_account.balance += amount
+
+        # Create and record the transaction
+        transaction = Transaction(
+            t_id=generate_unique_transaction_id(),
+            from_account=from_account_main.acct_no,
+            to_account=to_account_main.acct_no,
+            amount=amount
+        )
+        db.session.add(transaction)
+        db.session.commit()
+        return jsonify({'message': 'Transfer successful'}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': str(e)}), 500
+
+def get_account(customer_id, account_type, lock=False):
+    """Fetch account based on type and customer ID with optional locking."""
+    if account_type.lower() == 'checking':
+        account_class = CheckingAccount
     else:
-        return jsonify({'error': 'Recipient account type is invalid'}), 400
+        account_class = SavingsAccount
+    query = db.session.query(account_class).join(Account).filter(Account.customerid == customer_id)
+    if lock:
+        query = query.with_for_update()
+    account = query.first()
+    if account:
+        return account, account.account
+    return None, None
 
-    # Deduct the amount from the sender's account
-    from_account.balance -= amount
+def get_account_by_number(account_number, lock=False):
+    """Fetch account by account number with optional locking."""
+    account = Account.query.filter_by(acct_no=account_number).one_or_none()
+    if account:
+        sub_account = CheckingAccount.query.filter_by(acct_no=account_number).first() \
+                     if account.acct_type == 'Checking' else \
+                     SavingsAccount.query.filter_by(acct_no=account_number).first()
+        if lock and sub_account:
+            db.session.query(type(sub_account)).filter_by(acct_no=account_number).with_for_update().first()
+        return sub_account, account
+    return None, None
 
-    transaction = Transaction(
-        t_id=generate_unique_transaction_id(),
-        from_account=from_account.acct_no,
-        to_account=to_account.acct_no,
-        amount=amount
-    )
-    db.session.add(transaction)
-
-    db.session.commit()
-    return jsonify({'message': 'Transfer successful'}), 200
-
-def get_account(customer_id, account_type):
-    """Helper function to fetch account based on type and customer ID."""
-    print(account_type, customer_id)
-    if account_type == 'Checking' or account_type == 'checking':
-        return CheckingAccount.query.join(Account).filter(Account.customerid == customer_id).first()
-    elif account_type == 'Savings' or account_type == 'savings':
-        return SavingsAccount.query.join(Account).filter(Account.customerid == customer_id).first()
-    return None
 
 @api_blueprint.route('/update_profile', methods=['POST'])
 def update_profile():
@@ -482,6 +509,69 @@ def get_customer_transactions(customer_id):
 
     return jsonify(transactions_data), 200
 
+@api_blueprint.route('/delete_account', methods=['POST'])
+def delete_account():
+    pass
+@api_blueprint.route('/add_funds', methods=['POST'])
+def add_funds():
+    data = request.get_json()
+    customer_id = data.get('customer_id')
+    payment_method_id = data.get('paymentMethodId')
+    amount = data.get('amount')
+
+    amount_in_cents = int(Decimal(amount) * 100)
+
+    try:
+        # Correctly configure the PaymentIntent to avoid redirect-based payment methods
+        intent = stripe.PaymentIntent.create(
+            amount=amount_in_cents,
+            currency='usd',
+            payment_method=payment_method_id,
+            confirm=True,  # Automatically confirm the payment
+            automatic_payment_methods={
+                'enabled': True,
+                'allow_redirects': 'never'  # Correct usage according to the Stripe documentation
+            }
+        )
+
+        if intent.status == 'succeeded':
+            # If payment is successful, update the user's checking account
+            account = CheckingAccount.query.join(Account).filter(
+                Account.customerid == customer_id,
+                Account.acct_type == 'Checking'
+            ).first()
+
+            if account:
+                account.balance += Decimal(amount)
+                db.session.commit()
+                transaction_id = generate_unique_transaction_id()
+
+                # Record the transaction as both from and to the same account
+                transaction = Transaction(
+                    t_id=transaction_id,
+                    from_account=account.acct_no,
+                    to_account=account.acct_no,
+                    amount=Decimal(amount)
+                )
+                db.session.add(transaction)
+                db.session.commit()
+
+                return jsonify({'message': 'Payment successful and funds added', 'new_balance': str(account.balance)}), 200
+            else:
+                return jsonify({'error': 'Checking account not found'}), 404
+        else:
+            return jsonify({'error': 'Payment failed', 'details': intent.status}), 400
+
+    except stripe.error.StripeError as e:
+        return jsonify({'error': str(e)}), 400
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+
+
+    # For now, just return a success message with the received amount
 @api_blueprint.route('/pay_loan', methods=['POST'])
 def pay_loan():
     data = request.get_json()

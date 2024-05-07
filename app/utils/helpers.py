@@ -1,9 +1,11 @@
 import random
 import string
-from app.models import Account, Transaction
+from app.models import Account, Transaction, Customer
 from datetime import datetime, timedelta
 from decimal import Decimal
 from app import db
+from sqlalchemy.orm import aliased
+
 
 def generate_unique_account_number():
     while True:
